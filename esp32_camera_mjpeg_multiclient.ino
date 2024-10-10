@@ -43,19 +43,55 @@
 
 #include "camera_pins.h"
 
-/*
-  Next one is an include with wifi credentials.
-  This is what you need to do:
+// your wifi and password
+const char* ssid = "nicelight";
+const char* password = "Strongwifipassword1";
 
-  1. Create a file called "home_wifi_multi.h" in the same folder   OR   under a separate subfolder of the "libraries" folder of Arduino IDE. (You are creating a "fake" library really - I called it "MySettings").
-  2. Place the following text in the file:
-  #define SSID1 "replace with your wifi ssid"
-  #define PWD1 "replace your wifi password"
-  3. Save.
+//#define STATIC_IP // if you need static IP uncomment it and fill your ip below
 
-  Should work then
-*/
-#include "home_wifi_multi.h"
+#ifdef STATIC_IP
+//со статическим айпишничком
+IPAddress staticIP(192, 168, 0, 181); // ip of your esp32 CAM
+IPAddress gateway(192, 168, 0, 1);     
+IPAddress subnet(255, 255, 255, 0);
+IPAddress dns1(192, 168, 0, 1);       
+IPAddress dns2(8, 8, 8, 8);
+#endif
+
+// support stable wifi connection
+void wifiSupport() {
+  if (WiFi.status() != WL_CONNECTED) {
+    // Подключаемся к Wi-Fi
+    Serial.print("try conn to ");
+    Serial.print(ssid);
+    Serial.print(":");
+    WiFi.mode(WIFI_STA);
+#ifdef STATIC_IP
+    if (WiFi.config(staticIP, gateway, subnet, dns1, dns2) == false) {
+      Serial.println("wifi config failed.");
+      return;
+    }
+#endif
+
+    WiFi.begin(ssid, password);
+    uint8_t trycon = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+      if (trycon++ < 30) {
+        Serial.print(".");
+        delay(500);
+      }
+      else {
+        Serial.print("no Wifi. Esp restart!");
+        delay(1000);
+        ESP.restart();
+      }
+    }
+    Serial.println("Connected. \nIP: ");
+
+    // Выводим IP ESP32
+    Serial.println(WiFi.localIP());
+  }
+}//wifiSupport()
 
 OV2640 cam;
 
@@ -435,15 +471,7 @@ void setup()
 
   //  Configure and connect to WiFi
   IPAddress ip;
-
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SSID1, PWD1);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    delay(500);
-    Serial.print(F("."));
-  }
+  wifiSupport();
   ip = WiFi.localIP();
   Serial.println(F("WiFi connected"));
   Serial.println("");
@@ -466,4 +494,10 @@ void setup()
 
 void loop() {
   vTaskDelay(1000);
+    // each 10 seconds check wifi connection and reboot if lost
+  static uint32_t ms1 = 0;
+  if (millis() - ms1 >= 10000) {
+    ms1 = millis();
+    wifiSupport();
+  }//ms
 }
