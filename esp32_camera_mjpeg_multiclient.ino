@@ -20,45 +20,49 @@
    PSRAM: Enabled
 */
 
+
+
+
 // ESP32 has two cores: APPlication core and PROcess core (the one that runs ESP32 SDK stack)
 #define APP_CPU 1
 #define PRO_CPU 0
 
 #include "src/OV2640.h"
 #include <WiFi.h>
+//#include <ESPmDNS.h>
+#include <NetworkUdp.h>
 #include <WebServer.h>
 #include <WiFiClient.h>
-
 #include <esp_bt.h>
 #include <esp_wifi.h>
 #include <esp_sleep.h>
 #include <driver/rtc_io.h>
 
+#include <ElegantOTA.h>
+
 // Select camera model
 //#define CAMERA_MODEL_WROVER_KIT
-#define CAMERA_MODEL_ESP_EYE
+//#define CAMERA_MODEL_ESP_EYE
 //#define CAMERA_MODEL_M5STACK_PSRAM
 //#define CAMERA_MODEL_M5STACK_WIDE
-//#define CAMERA_MODEL_AI_THINKER
+#define CAMERA_MODEL_AI_THINKER
 
 #include "camera_pins.h"
 
-// your wifi and password
+#define STATIC_IP // закомментировать если подключаетесь к мобильной точке доступа на телефоне
 const char* ssid = "nicelight";
 const char* password = "Strongwifipassword1";
 
-//#define STATIC_IP // if you need static IP uncomment it and fill your ip below
-
 #ifdef STATIC_IP
 //со статическим айпишничком
-IPAddress staticIP(192, 168, 0, 181); // ip of your esp32 CAM
-IPAddress gateway(192, 168, 0, 1);     
+IPAddress staticIP(192, 168, 10, 182); // важно правильно указать третье число - подсеть, смотри пояснения выше
+IPAddress gateway(192, 168, 10, 1);    // и тут изменить тройку на свою подсеть
 IPAddress subnet(255, 255, 255, 0);
-IPAddress dns1(192, 168, 0, 1);       
+IPAddress dns1(192, 168, 10, 1);       // изменить тройку на свою подсеть
 IPAddress dns2(8, 8, 8, 8);
 #endif
 
-// support stable wifi connection
+// поддержка wifi связи
 void wifiSupport() {
   if (WiFi.status() != WL_CONNECTED) {
     // Подключаемся к Wi-Fi
@@ -81,7 +85,7 @@ void wifiSupport() {
         delay(500);
       }
       else {
-        Serial.print("no Wifi. Esp restart!");
+        Serial.print("no connection to Wifi. Esp restarts NOW!");
         delay(1000);
         ESP.restart();
       }
@@ -92,6 +96,7 @@ void wifiSupport() {
     Serial.println(WiFi.localIP());
   }
 }//wifiSupport()
+
 
 OV2640 cam;
 
@@ -151,8 +156,11 @@ void mjpegCB(void* pvParameters) {
     APP_CPU);
 
   //  Registering webserver handling routines
-  server.on("/mjpeg/1", HTTP_GET, handleJPGSstream);
+  server.on("/", HTTP_GET, handleJPGSstream);
+  //  server.on("/stream", HTTP_GET, handleJPGSstream);
   server.on("/jpg", HTTP_GET, handleJPG);
+
+
   server.onNotFound(handleNotFound);
 
   //  Starting webserver
@@ -303,6 +311,7 @@ void handleJPGSstream(void)
   *client = server.client();
 
   //  Immediately send this client a header
+  delay(10);
   client->write(HEADER, hdrLen);
   client->write(BOUNDARY, bdrLen);
 
@@ -312,6 +321,7 @@ void handleJPGSstream(void)
   // Wake up streaming tasks, if they were previously suspended:
   if ( eTaskGetState( tCam ) == eSuspended ) vTaskResume( tCam );
   if ( eTaskGetState( tStream ) == eSuspended ) vTaskResume( tStream );
+
 }
 
 
@@ -395,9 +405,13 @@ void handleJPG(void)
   WiFiClient client = server.client();
 
   if (!client.connected()) return;
+  digitalWrite(4, 1); // включим вспышечку
+  delay(10);
   cam.run();
   client.write(JHEADER, jhdLen);
   client.write((char*)cam.getfb(), cam.getSize());
+  digitalWrite(4, 0); // OFF вспышечку
+
 }
 
 
@@ -405,13 +419,21 @@ void handleJPG(void)
 void handleNotFound()
 {
   String message = "Server is running!\n\n";
+  message += "Wi-Fi strength: ";
+  int rssi = WiFi.RSSI();
+  message += String(rssi);
+  message += " db\n";
   message += "URI: ";
   message += server.uri();
-  message += "\nMethod: ";
+  message += "\n\nMethod: ";
   message += (server.method() == HTTP_GET) ? "GET" : "POST";
   message += "\nArguments: ";
   message += server.args();
-  message += "\n";
+  message += "\nget shot: ip/jpg";
+  message += "\nOTA update firmware: ip/update";
+
+
+
   server.send(200, "text / plain", message);
 }
 
@@ -424,7 +446,8 @@ void setup()
   // Setup Serial connection:
   Serial.begin(115200);
   delay(1000); // wait for a second to let Serial connect
-
+  pinMode(4, OUTPUT);
+  digitalWrite(4, 0);
 
   // Configure the camera
   camera_config_t config;
@@ -450,11 +473,14 @@ void setup()
   config.pixel_format = PIXFORMAT_JPEG;
 
   // Frame parameters: pick one
-  //  config.frame_size = FRAMESIZE_UXGA;
-  //  config.frame_size = FRAMESIZE_SVGA;
-  //  config.frame_size = FRAMESIZE_QVGA;
-  config.frame_size = FRAMESIZE_VGA;
-  config.jpeg_quality = 12;
+  //  config.frame_size = FRAMESIZE_QVGA; //320 240
+  //  config.frame_size = FRAMESIZE_VGA; // 640 480
+  //  config.frame_size = FRAMESIZE_SVGA; // 800 600
+  //  config.frame_size = FRAMESIZE_XGA; // 1024 768
+  config.frame_size = FRAMESIZE_HD; // 1280x720
+  //  config.frame_size = FRAMESIZE_UXGA; //1600 1200
+
+  config.jpeg_quality = 12; //10-63 lower number means higher quality
   config.fb_count = 2;
 
 #if defined(CAMERA_MODEL_ESP_EYE)
@@ -464,21 +490,41 @@ void setup()
 
   if (cam.init(config) != ESP_OK) {
     Serial.println("Error initializing the camera");
-    delay(10000);
+    delay(3000);
     ESP.restart();
   }
 
-
-  //  Configure and connect to WiFi
-  IPAddress ip;
   wifiSupport();
+
+  IPAddress ip;
   ip = WiFi.localIP();
   Serial.println(F("WiFi connected"));
   Serial.println("");
-  Serial.print("Stream Link: http://");
+  Serial.print("Stream http://");
+  Serial.println(ip);
+  Serial.print("to get shot:\n http://");
   Serial.print(ip);
-  Serial.println("/mjpeg/1");
+  Serial.println("/jpg");
+  Serial.print("OTA update firmware: http://");
+  Serial.print(ip);
+  Serial.println("/update");
+  pinMode(33, OUTPUT);
+  digitalWrite(33, 0);
+  delay(50);
+  digitalWrite(33, 1);
+  delay(50);
+  digitalWrite(33, 0);
+  delay(50);
+  digitalWrite(33, 1);
+  delay(50);
+  digitalWrite(33, 0);
+  delay(50);
+  digitalWrite(33, 1);
 
+  ElegantOTA.begin(&server);    // Start ElegantOTA
+//  ElegantOTA.onStart(onOTAStart);
+//  ElegantOTA.onProgress(onOTAProgress);
+//  ElegantOTA.onEnd(onOTAEnd);
 
   // Start mainstreaming RTOS task
   xTaskCreatePinnedToCore(
@@ -489,15 +535,20 @@ void setup()
     2,
     &tMjpeg,
     APP_CPU);
-}
+}//setup
 
 
 void loop() {
   vTaskDelay(1000);
-    // each 10 seconds check wifi connection and reboot if lost
+  ElegantOTA.loop();
+
+  // раз в 10 сек проверим стабильность сети
   static uint32_t ms1 = 0;
   if (millis() - ms1 >= 10000) {
     ms1 = millis();
     wifiSupport();
+    digitalWrite(33, 0);
+    delay(50);
+    digitalWrite(33, 1);
   }//ms
 }
